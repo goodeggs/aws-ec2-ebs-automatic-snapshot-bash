@@ -14,10 +14,8 @@ set -o pipefail
 #
 # Additonal credits: Log function by Alan Franzoni; Pre-req check by Colin Johnson
 #
-# PURPOSE: This Bash script can be used to take automatic snapshots of your Linux EC2 instance. Script process:
-# - Determine the instance ID of the EC2 server on which the script runs
-# - Gather a list of all volume IDs attached to that instance
-# - Take a snapshot of each attached volume
+# PURPOSE: This Bash script can be used to take automatic snapshots of your Linux EC2 EBS volumes. Script process:
+# - Take a snapshot of the specified volumes
 # - The script will then delete all associated snapshots taken by the script that are older than 7 days
 #
 # DISCLAIMER: Hey, this script deletes snapshots (though only the ones that it creates)!
@@ -91,25 +89,44 @@ set -o pipefail
 
 ## Variable Declartions ##
 
-# Get Instance Details
-instance_id=$(wget -q -O- http://169.254.169.254/latest/meta-data/instance-id)
-region=$(wget -q -O- http://169.254.169.254/latest/meta-data/placement/availability-zone | sed -e 's/\([1-9]\).$/\1/g')
-
 # Set Logging Options
 logfile="/var/log/ebs-snapshot.log"
 logfile_max_lines="5000"
+logfile_enabled=1 # Log to file by default
 
 # How many days do you wish to retain backups for? Default: 7 days
 retention_days="7"
 retention_date_in_seconds=$(date +%s --date "$retention_days days ago")
 
+# Application Instance to tag your snapshots
+app_instance=
+
+# Region of the EBS volume
+region=
+
 
 ## Function Declarations ##
+
+# Usage
+usage() {
+    cat <<EOF
+$(basename ${0}): [-N] [-a instance] -r <region> volume_id...
+    volume_id                   EBS volume ids to snapshot
+    -N                          Disable logfile, still write to stdout
+    -a <app_instance>           Application instance to tag this snapshot e.g. test
+    -r <region>                 AWS region where your volumes live e.g. us-east-1
+
+EOF
+}
 
 # Function: Setup logfile and redirect stdout/stderr.
 log_setup() {
     # Check if logfile exists and is writable.
-    ( [ -e "$logfile" ] || touch "$logfile" ) && [ ! -w "$logfile" ] && echo "ERROR: Cannot write to $logfile. Check permissions or sudo access." && exit 1
+    local f=$( [ -e "$logfile" ] || touch "$logfile" )
+    if [[ $? -ne 0 || ! -w "$logfile" ]]; then
+        echo "ERROR: Cannot write to $logfile. Check permissions or sudo access."
+        exit 1
+    fi
 
     tmplog=$(tail -n $logfile_max_lines $logfile 2>/dev/null) && echo "${tmplog}" > $logfile
     exec > >(tee -a $logfile)
@@ -131,27 +148,35 @@ prerequisite_check() {
 	done
 }
 
-# Function: Snapshot all volumes attached to this instance.
+# Function: Snapshot all volumes in $volume_list.
 snapshot_volumes() {
 	for volume_id in $volume_list; do
 		log "Volume ID is $volume_id"
 
 		# Take a snapshot of the current volume, and capture the resulting snapshot ID
-		snapshot_description="$(hostname)-backup-$(date +%Y-%m-%d)"
+		snapshot_description="${volume_id}-backup-$(date +%Y-%m-%d)"
 
 		snapshot_id=$(aws ec2 create-snapshot --region $region --output=text --description $snapshot_description --volume-id $volume_id --query SnapshotId)
 		log "New snapshot is $snapshot_id"
 	 
 		# Add a "CreatedBy:AutomatedBackup" tag to the resulting snapshot.
 		# Why? Because we only want to purge snapshots taken by the script later, and not delete snapshots manually taken.
-		aws ec2 create-tags --region $region --resource $snapshot_id --tags Key=CreatedBy,Value=AutomatedBackup
+                local tags=( "Key=CreatedBy,Value=AutomatedBackup" )
+                if [[ -n "$app_instance" ]]; then
+                    tags+=( "Key=AppInstance,Value=${app_instance}" )
+                fi
+		aws ec2 create-tags --region $region --resource $snapshot_id --tags "${tags[@]}"
 	done
 }
 
-# Function: Cleanup all snapshots associated with this instance that are older than $retention_days
+# Function: Cleanup all snapshots in $volume_list that are older than $retention_days
 cleanup_snapshots() {
 	for volume_id in $volume_list; do
-		snapshot_list=$(aws ec2 describe-snapshots --region $region --output=text --filters "Name=volume-id,Values=$volume_id" "Name=tag:CreatedBy,Values=AutomatedBackup" --query Snapshots[].SnapshotId)
+                local filters=( "Name=volume-id,Values=$volume_id" "Name=tag:CreatedBy,Values=AutomatedBackup" )
+                if [[ -n "$app_instance" ]]; then
+                    filters+=( "Name=tag:AppInstance,Values=${app_instance}" )
+                fi
+		snapshot_list=$(aws ec2 describe-snapshots --region $region --output=text --filters "${filters[@]}" --query Snapshots[].SnapshotId)
 		for snapshot in $snapshot_list; do
 			log "Checking $snapshot..."
 			# Check age of snapshot
@@ -172,11 +197,45 @@ cleanup_snapshots() {
 
 ## SCRIPT COMMANDS ##
 
-log_setup
-prerequisite_check
+# Parse region from command line
+while getopts ":Na:r:" opt; do
+    case $opt in
+        N)
+            logfile_enabled=0
+            ;;
+        a)
+            app_instance=$OPTARG
+            ;;
+        r)
+            region=$OPTARG
+            ;;
+        \?)
+            usage
+            exit 2
+            ;;
+    esac
+done
 
-# Grab all volume IDs attached to this instance
-volume_list=$(aws ec2 describe-volumes --region $region --filters Name=attachment.instance-id,Values=$instance_id --query Volumes[].VolumeId --output text)
+# The rest of the args are volume ids
+shift $(($OPTIND - 1))
+volume_list="$@"
+
+if [[ ! -n "$region" ]]; then
+    echo "You must specify a region."
+    usage
+    exit 2
+fi
+
+if [[ ! -n "$volume_list" ]]; then
+    echo "You must specify at least one volume id."
+    usage
+    exit 2
+fi
+
+if [[ $logfile_enabled -gt 0 ]]; then
+    log_setup
+fi
+prerequisite_check
 
 snapshot_volumes
 cleanup_snapshots
