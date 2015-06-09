@@ -92,6 +92,7 @@ set -o pipefail
 # Set Logging Options
 logfile="/var/log/ebs-snapshot.log"
 logfile_max_lines="5000"
+logfile_enabled=1 # Log to file by default
 
 # How many days do you wish to retain backups for? Default: 7 days
 retention_days="7"
@@ -106,6 +107,7 @@ usage() {
 $(basename ${0}): -r <region> volume_id...
     volume_id                   EBS volume ids to snapshot
     -r <region>                 AWS region where your volumes live e.g. us-east-1
+    -N                          Disable logfile, still write to stdout
 
 EOF
 }
@@ -113,7 +115,11 @@ EOF
 # Function: Setup logfile and redirect stdout/stderr.
 log_setup() {
     # Check if logfile exists and is writable.
-    ( [ -e "$logfile" ] || touch "$logfile" ) && [ ! -w "$logfile" ] && echo "ERROR: Cannot write to $logfile. Check permissions or sudo access." && exit 1
+    local f=$( [ -e "$logfile" ] || touch "$logfile" )
+    if [[ $? -ne 0 || ! -w "$logfile" ]]; then
+        echo "ERROR: Cannot write to $logfile. Check permissions or sudo access."
+        exit 1
+    fi
 
     tmplog=$(tail -n $logfile_max_lines $logfile 2>/dev/null) && echo "${tmplog}" > $logfile
     exec > >(tee -a $logfile)
@@ -177,8 +183,11 @@ cleanup_snapshots() {
 ## SCRIPT COMMANDS ##
 
 # Parse region from command line
-while getopts ":r:" opt; do
+while getopts ":r:N" opt; do
     case $opt in
+        N)
+            logfile_enabled=0
+            ;;
         r)
             region=$OPTARG
             ;;
@@ -205,7 +214,9 @@ if [[ ! -n "$volume_list" ]]; then
     exit 2
 fi
 
-log_setup
+if [[ $logfile_enabled -gt 0 ]]; then
+    log_setup
+fi
 prerequisite_check
 
 snapshot_volumes
