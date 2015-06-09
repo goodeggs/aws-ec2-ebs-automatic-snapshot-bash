@@ -14,10 +14,8 @@ set -o pipefail
 #
 # Additonal credits: Log function by Alan Franzoni; Pre-req check by Colin Johnson
 #
-# PURPOSE: This Bash script can be used to take automatic snapshots of your Linux EC2 instance. Script process:
-# - Determine the instance ID of the EC2 server on which the script runs
-# - Gather a list of all volume IDs attached to that instance
-# - Take a snapshot of each attached volume
+# PURPOSE: This Bash script can be used to take automatic snapshots of your Linux EC2 EBS volumes. Script process:
+# - Take a snapshot of the specified volumes
 # - The script will then delete all associated snapshots taken by the script that are older than 7 days
 #
 # DISCLAIMER: Hey, this script deletes snapshots (though only the ones that it creates)!
@@ -91,10 +89,6 @@ set -o pipefail
 
 ## Variable Declartions ##
 
-# Get Instance Details
-instance_id=$(wget -q -O- http://169.254.169.254/latest/meta-data/instance-id)
-region=$(wget -q -O- http://169.254.169.254/latest/meta-data/placement/availability-zone | sed -e 's/\([1-9]\).$/\1/g')
-
 # Set Logging Options
 logfile="/var/log/ebs-snapshot.log"
 logfile_max_lines="5000"
@@ -105,6 +99,16 @@ retention_date_in_seconds=$(date +%s --date "$retention_days days ago")
 
 
 ## Function Declarations ##
+
+# Usage
+usage() {
+    cat <<EOF
+$(basename ${0}): -r <region> volume_id...
+    volume_id                   EBS volume ids to snapshot
+    -r <region>                 AWS region where your volumes live e.g. us-east-1
+
+EOF
+}
 
 # Function: Setup logfile and redirect stdout/stderr.
 log_setup() {
@@ -131,7 +135,7 @@ prerequisite_check() {
 	done
 }
 
-# Function: Snapshot all volumes attached to this instance.
+# Function: Snapshot all volumes in $volume_list.
 snapshot_volumes() {
 	for volume_id in $volume_list; do
 		log "Volume ID is $volume_id"
@@ -148,7 +152,7 @@ snapshot_volumes() {
 	done
 }
 
-# Function: Cleanup all snapshots associated with this instance that are older than $retention_days
+# Function: Cleanup all snapshots in $volume_list that are older than $retention_days
 cleanup_snapshots() {
 	for volume_id in $volume_list; do
 		snapshot_list=$(aws ec2 describe-snapshots --region $region --output=text --filters "Name=volume-id,Values=$volume_id" "Name=tag:CreatedBy,Values=AutomatedBackup" --query Snapshots[].SnapshotId)
@@ -172,11 +176,37 @@ cleanup_snapshots() {
 
 ## SCRIPT COMMANDS ##
 
+# Parse region from command line
+while getopts ":r:" opt; do
+    case $opt in
+        r)
+            region=$OPTARG
+            ;;
+        \?)
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+# The rest of the args are volume ids
+shift $(($OPTIND - 1))
+volume_list="$@"
+
+if [[ ! -n "$region" ]]; then
+    echo "You must specify a region."
+    usage
+    exit 2
+fi
+
+if [[ ! -n "$volume_list" ]]; then
+    echo "You must specify at least one volume id."
+    usage
+    exit 2
+fi
+
 log_setup
 prerequisite_check
-
-# Grab all volume IDs attached to this instance
-volume_list=$(aws ec2 describe-volumes --region $region --filters Name=attachment.instance-id,Values=$instance_id --query Volumes[].VolumeId --output text)
 
 snapshot_volumes
 cleanup_snapshots
