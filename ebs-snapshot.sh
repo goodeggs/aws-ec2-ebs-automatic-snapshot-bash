@@ -104,10 +104,11 @@ retention_date_in_seconds=$(date +%s --date "$retention_days days ago")
 # Usage
 usage() {
     cat <<EOF
-$(basename ${0}): -r <region> volume_id...
+$(basename ${0}): [-N] [-a instance] -r <region> volume_id...
     volume_id                   EBS volume ids to snapshot
-    -r <region>                 AWS region where your volumes live e.g. us-east-1
     -N                          Disable logfile, still write to stdout
+    -a <app_instance>           Application instance to tag this snapshot
+    -r <region>                 AWS region where your volumes live e.g. us-east-1
 
 EOF
 }
@@ -147,21 +148,21 @@ snapshot_volumes() {
 		log "Volume ID is $volume_id"
 
 		# Take a snapshot of the current volume, and capture the resulting snapshot ID
-		snapshot_description="$(hostname)-backup-$(date +%Y-%m-%d)"
+		snapshot_description="${volume_id}-backup-$(date +%Y-%m-%d)"
 
 		snapshot_id=$(aws ec2 create-snapshot --region $region --output=text --description $snapshot_description --volume-id $volume_id --query SnapshotId)
 		log "New snapshot is $snapshot_id"
 	 
 		# Add a "CreatedBy:AutomatedBackup" tag to the resulting snapshot.
 		# Why? Because we only want to purge snapshots taken by the script later, and not delete snapshots manually taken.
-		aws ec2 create-tags --region $region --resource $snapshot_id --tags Key=CreatedBy,Value=AutomatedBackup
+		aws ec2 create-tags --region $region --resource $snapshot_id --tags "Key=CreatedBy,Value=AutomatedBackup" "Key=AppInstance,Value=${app_instance}"
 	done
 }
 
 # Function: Cleanup all snapshots in $volume_list that are older than $retention_days
 cleanup_snapshots() {
 	for volume_id in $volume_list; do
-		snapshot_list=$(aws ec2 describe-snapshots --region $region --output=text --filters "Name=volume-id,Values=$volume_id" "Name=tag:CreatedBy,Values=AutomatedBackup" --query Snapshots[].SnapshotId)
+		snapshot_list=$(aws ec2 describe-snapshots --region $region --output=text --filters "Name=volume-id,Values=$volume_id" "Name=tag:CreatedBy,Values=AutomatedBackup" "Name=tag:AppInstance,Values=${app_instance}" --query Snapshots[].SnapshotId)
 		for snapshot in $snapshot_list; do
 			log "Checking $snapshot..."
 			# Check age of snapshot
@@ -183,10 +184,13 @@ cleanup_snapshots() {
 ## SCRIPT COMMANDS ##
 
 # Parse region from command line
-while getopts ":r:N" opt; do
+while getopts ":Na:r:" opt; do
     case $opt in
         N)
             logfile_enabled=0
+            ;;
+        a)
+            app_instance=$OPTARG
             ;;
         r)
             region=$OPTARG
