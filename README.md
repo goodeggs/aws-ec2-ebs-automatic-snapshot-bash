@@ -10,9 +10,7 @@ Written by  **[AWS Consultants - Casey Labs Inc.] (http://www.caseylabs.com)**
 
 **How it works:**
 ebs-snapshot.sh will:
-- Determine the instance ID of the EC2 server on which the script runs
-- Gather a list of all volume IDs attached to that instance
-- Take a snapshot of each attached volume
+- Take a snapshot of each specified volume
 - The script will then delete all associated snapshots taken by the script that are older than 7 days
 
 Pull requests greatly welcomed!
@@ -79,10 +77,20 @@ chmod +x /opt/aws/ebs-snapshot.sh
 
 You should then setup a cron job in order to schedule a nightly backup. Example crontab job:
 ```
-55 22 * * * root  AWS_CONFIG_FILE="/root/.aws/config" /opt/aws/ebs-snapshot.sh
+55 22 * * * root  AWS_CONFIG_FILE="/root/.aws/config" /opt/aws/ebs-snapshot.sh -r $AWS_REGION $AWS_VOLUMES
 ```
 
 To manually test the script:
 ```
-sudo /opt/aws/ebs-snapshot.sh
+sudo /opt/aws/ebs-snapshot.sh -r <region> -a test volumes...
 ```
+
+####  Running on Heroku Scheduler
+
+Create an IAM user as above. Put youre credentials into the heroku environment.
+
+    $ heroku config:set -a <heroku_app> AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+
+Create a daily heroku scheduler task.
+
+    $ ./ebs-snapshot.sh -N -r us-east-1 volume-id
