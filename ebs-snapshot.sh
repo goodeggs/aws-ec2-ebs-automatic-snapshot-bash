@@ -101,6 +101,9 @@ retention_date_in_seconds=$(date +%s --date "$retention_days days ago")
 # Application Instance to tag your snapshots
 app_instance=
 
+# Region of the EBS volume
+region=
+
 
 ## Function Declarations ##
 
