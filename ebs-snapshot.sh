@@ -98,6 +98,9 @@ logfile_enabled=1 # Log to file by default
 retention_days="7"
 retention_date_in_seconds=$(date +%s --date "$retention_days days ago")
 
+# Application Instance to tag your snapshots
+app_instance=
+
 
 ## Function Declarations ##
 
@@ -107,7 +110,7 @@ usage() {
 $(basename ${0}): [-N] [-a instance] -r <region> volume_id...
     volume_id                   EBS volume ids to snapshot
     -N                          Disable logfile, still write to stdout
-    -a <app_instance>           Application instance to tag this snapshot
+    -a <app_instance>           Application instance to tag this snapshot e.g. test
     -r <region>                 AWS region where your volumes live e.g. us-east-1
 
 EOF
@@ -155,14 +158,22 @@ snapshot_volumes() {
 	 
 		# Add a "CreatedBy:AutomatedBackup" tag to the resulting snapshot.
 		# Why? Because we only want to purge snapshots taken by the script later, and not delete snapshots manually taken.
-		aws ec2 create-tags --region $region --resource $snapshot_id --tags "Key=CreatedBy,Value=AutomatedBackup" "Key=AppInstance,Value=${app_instance}"
+                local tags=( "Key=CreatedBy,Value=AutomatedBackup" )
+                if [[ -n "$app_instance" ]]; then
+                    tags+=( "Key=AppInstance,Value=${app_instance}" )
+                fi
+		aws ec2 create-tags --region $region --resource $snapshot_id --tags "${tags[@]}"
 	done
 }
 
 # Function: Cleanup all snapshots in $volume_list that are older than $retention_days
 cleanup_snapshots() {
 	for volume_id in $volume_list; do
-		snapshot_list=$(aws ec2 describe-snapshots --region $region --output=text --filters "Name=volume-id,Values=$volume_id" "Name=tag:CreatedBy,Values=AutomatedBackup" "Name=tag:AppInstance,Values=${app_instance}" --query Snapshots[].SnapshotId)
+                local filters=( "Name=volume-id,Values=$volume_id" "Name=tag:CreatedBy,Values=AutomatedBackup" )
+                if [[ -n "$app_instance" ]]; then
+                    filters+=( "Name=tag:AppInstance,Values=${app_instance}" )
+                fi
+		snapshot_list=$(aws ec2 describe-snapshots --region $region --output=text --filters "${filters[@]}" --query Snapshots[].SnapshotId)
 		for snapshot in $snapshot_list; do
 			log "Checking $snapshot..."
 			# Check age of snapshot
