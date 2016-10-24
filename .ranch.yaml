@@ -1,0 +1,7 @@
+env_id: 580e7a94d30915190099ab09
+
+name: aws-cron
+
+cron:
+  - "0 10 * * ? ./ebs-snapshot.sh -N -r us-east-1  vol-97cd83d0"
+
